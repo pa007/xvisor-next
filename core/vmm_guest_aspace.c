@@ -36,6 +36,7 @@
 #include <vmm_notifier.h>
 #include <arch_guest.h>
 #include <libs/stringlib.h>
+#include <vmm_coloring.h>
 
 static BLOCKING_NOTIFIER_CHAIN(guest_aspace_notifier_chain);
 
@@ -697,6 +698,19 @@ static int region_add(struct vmm_guest *guest,
 		reg->flags |= VMM_REGION_BUFFERABLE;
 	}
 
+
+    #ifdef  CONFIG_CACHE_COLORING_LLC
+    //Try to read colors attribute
+    rc = vmm_devtree_read_u32(reg->node,
+        VMM_DEVTREE_COLORS_ATTR_NAME, &reg->colors);
+    VMM_PRINTF_GADEBUG("%s: read attribute colors=0x%X rc=%d\n",__func__,reg->colors,rc);
+    if (!rc)
+    {
+        if (reg->colors != 0 && reg->colors < VMM_MAX_COLOR_NUM)
+            reg->flags |= VMM_REGION_ISCOLORED;
+    }
+    #endif
+
 	rc = vmm_devtree_read_physaddr(reg->node,
 				VMM_DEVTREE_GUEST_PHYS_ATTR_NAME,
 				&reg->gphys_addr);
@@ -741,6 +755,24 @@ static int region_add(struct vmm_guest *guest,
 		rc = VMM_EINVALID;
 		goto region_free_fail;
 	}
+
+    #ifdef CONFIG_CACHE_COLORING_LLC
+    /**
+    * Overwrite mapping order if colors are setted
+    * colors are suppose contigous if not use
+    * map_order DT attribute check in the next step
+    */
+    if (reg->flags & VMM_REGION_ISCOLORED)
+    {
+        int count_colors = number_of_colors(reg->colors);
+        reg->map_order = VMM_COLOR_SHIFT;
+        while (order_size(reg->map_order) < (VMM_COLOR_SIZE * count_colors))
+            reg->map_order++;
+        reg->align_order = reg->map_order;
+        VMM_PRINTF_GADEBUG("%s: map->order=0x%d\n",__func__,reg->map_order);
+    }
+    #endif
+
 
 	/*
 	 * Overwrite mapping order for alloced RAM/ROM regions
@@ -825,10 +857,11 @@ static int region_add(struct vmm_guest *guest,
 		}
 	}
 
-	/* Allocate host RAM for alloced RAM/ROM regions */
+    /* Allocate host RAM for alloced RAM/ROM regions NOT COLORED*/
 	if (!(reg->flags & (VMM_REGION_ALIAS | VMM_REGION_VIRTUAL)) &&
 	    (reg->flags & (VMM_REGION_ISRAM | VMM_REGION_ISROM)) &&
-	    (reg->flags & VMM_REGION_ISALLOCED)) {
+        (reg->flags & VMM_REGION_ISALLOCED) &&
+        !(reg->flags & VMM_REGION_ISCOLORED)) {
 		for (i = 0; i < reg->maps_count; i++) {
 			if (!vmm_host_ram_alloc(&reg->maps[i].hphys_addr,
 						mapping_phys_size(reg, i),
@@ -851,6 +884,38 @@ static int region_add(struct vmm_guest *guest,
 			}
 		}
 	}
+
+    #ifdef CONFIG_CACHE_COLORING_LLC
+    /* Allocate host RAM for alloced RAM/ROM regions COLORED*/
+    if (!(reg->flags & (VMM_REGION_ALIAS | VMM_REGION_VIRTUAL)) &&
+        (reg->flags & (VMM_REGION_ISRAM | VMM_REGION_ISROM)) &&
+        (reg->flags & VMM_REGION_ISALLOCED) &&
+        (reg->flags & VMM_REGION_ISCOLORED)) {
+
+        for (i = 0; i < reg->maps_count; i++) {
+            if (!vmm_host_ram_alloc_colored(&reg->maps[i].hphys_addr,
+                        mapping_phys_size(reg, i),
+                        reg->align_order,
+                        reg->colors)) {
+                vmm_printf("%s: Failed to alloc "
+                       "host RAM for %s/%s\n",
+                    __func__, guest->name,
+                    reg->node->name);
+                rc = VMM_ENOMEM;
+                goto region_ram_free_fail;
+            } else {
+                reg->maps[i].flags |=
+                    VMM_REGION_MAPPING_ISHOSTRAM;
+                if (reg->flags & VMM_REGION_ISROM) {
+                    vmm_host_memory_set(
+                        reg->maps[i].hphys_addr, 0,
+                        mapping_phys_size(reg, i),
+                        FALSE);
+                }
+            }
+        }
+    }
+    #endif
 
 	/* Probe device emulation for real & virtual device regions */
 	if ((reg->flags & VMM_REGION_ISDEVICE) &&

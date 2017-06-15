@@ -31,6 +31,7 @@
 #include <libs/stringlib.h>
 #include <libs/mathlib.h>
 #include <libs/bitmap.h>
+#include <vmm_coloring.h>
 
 struct vmm_host_ram_bank {
 	physical_addr_t start;
@@ -59,6 +60,9 @@ physical_size_t vmm_host_ram_alloc(physical_addr_t *pa,
 	irq_flags_t flags;
 	u32 i, found, bn, binc, bcnt, bpos, bfree;
 	struct vmm_host_ram_bank *bank;
+
+//   VMM_PRINTF_HRDEBUG("%s parametri: pa=0x%llX, sz=0x%llX, align_order=0x%X\n",
+  //                    __func__,*pa, sz, align_order);
 
 	if ((sz == 0) ||
 	    (align_order < VMM_PAGE_SHIFT) ||
@@ -107,6 +111,9 @@ physical_size_t vmm_host_ram_alloc(physical_addr_t *pa,
 		bitmap_set(bank->bmap, bpos, bcnt);
 		bank->bmap_free -= bcnt;
 
+  //    VMM_PRINTF_HRDEBUG("---- %s: *pa = 0x%llX bpos=0x%X bcnt=0x%X bank->bmap_free = 0x%X\n",
+    //                     __func__, *pa,bpos,bcnt,bank->bmap_free);
+
 		vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, flags);
 
 		return sz;
@@ -115,12 +122,96 @@ physical_size_t vmm_host_ram_alloc(physical_addr_t *pa,
 	return 0;
 }
 
+
+#ifdef  CONFIG_CACHE_COLORING_LLC
+physical_size_t vmm_host_ram_alloc_colored(physical_addr_t *pa,
+                   physical_size_t sz,
+                   u32 align_order,
+                   u32 colors)
+{
+    irq_flags_t flags;
+    u32 i, found, bn, binc, bcnt, bpos, bfree;
+    struct vmm_host_ram_bank *bank;
+
+    //VMM_PRINTF_HRDEBUG("%s parametri: pa=0x%llX, sz=0x%llX, align_order=0x%X\n",
+      //                 __func__,*pa, sz, align_order);
+
+    if ((sz == 0) ||
+        (align_order < VMM_PAGE_SHIFT) ||
+        (BITS_PER_LONG <= align_order)) {
+        return 0;
+    }
+
+    sz = roundup2_order_size(sz, align_order);
+    bcnt = VMM_SIZE_TO_PAGE(sz);
+
+    for (bn = 0; bn < rctrl.bank_count; bn++) {
+        bank = &rctrl.banks[bn];
+
+        vmm_spin_lock_irqsave_lite(&bank->bmap_lock, flags);
+
+        if (bank->bmap_free < bcnt) {
+            vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, flags);
+            continue;
+        }
+
+        found = 0;
+        binc = order_size(align_order) >> VMM_PAGE_SHIFT;
+        bpos = bank->start & order_mask(align_order);
+        if (bpos) {
+            bpos = VMM_SIZE_TO_PAGE(order_size(align_order) - bpos);
+        }
+        for (; bpos < (bank->size >> VMM_PAGE_SHIFT); bpos += binc) {
+            bfree = 0;
+            //VMM_PRINTF_HRDEBUG("%s: pa=0x%llX, color=0x%X\n",
+              //                 __func__,(bank->start + bpos * VMM_PAGE_SIZE), colors);
+            if (!check_color((bank->start + bpos * VMM_PAGE_SIZE), colors))
+            {
+               // VMM_PRINTF_HRDEBUG("%s: check_colors false\n",
+                 //                  __func__);
+                continue;
+            }
+            for (i = bpos; i < (bpos + bcnt); i++) {
+                if (bitmap_isset(bank->bmap, i)) {
+                    break;
+                }
+                bfree++;
+            }
+            if (bfree == bcnt) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, flags);
+            continue;
+        }
+
+        *pa = bank->start + bpos * VMM_PAGE_SIZE;
+        bitmap_set(bank->bmap, bpos, bcnt);
+        bank->bmap_free -= bcnt;
+
+      //  VMM_PRINTF_HRDEBUG("---- %s: *pa = 0x%llX bpos=0x%X bcnt=0x%X bank->bmap_free = 0x%X\n",
+        //                   __func__, *pa,bpos,bcnt,bank->bmap_free);
+
+        vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, flags);
+
+        return sz;
+    }
+
+    return 0;
+}
+#endif
+
 int vmm_host_ram_reserve(physical_addr_t pa, physical_size_t sz)
 {
 	int rc = VMM_EINVALID;
 	u32 i, bn, bcnt, bpos, bfree;
 	irq_flags_t flags;
 	struct vmm_host_ram_bank *bank;
+
+    VMM_PRINTF_HRDEBUG("%s parametri: pa=0x%llX, sz=0x%llX\n",
+                       __func__,pa, sz);
 
 	for (bn = 0; bn < rctrl.bank_count; bn++) {
 		bank = &rctrl.banks[bn];
@@ -160,6 +251,10 @@ int vmm_host_ram_reserve(physical_addr_t pa, physical_size_t sz)
 
 		vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, flags);
 
+
+        VMM_PRINTF_HRDEBUG("%s parametri: pa=0x%llX, sz=0x%llX allocated***\n",
+                           __func__,pa, sz);
+
 		rc = VMM_OK;
 		break;
 	}
@@ -173,6 +268,9 @@ int vmm_host_ram_free(physical_addr_t pa, physical_size_t sz)
 	u32 bn, bcnt, bpos;
 	irq_flags_t flags;
 	struct vmm_host_ram_bank *bank;
+
+    VMM_PRINTF_HRDEBUG("%s parametri: pa=0x%llX, sz=0x%llX\n",
+                       __func__,pa, sz);
 
 	for (bn = 0; bn < rctrl.bank_count; bn++) {
 		bank = &rctrl.banks[bn];
@@ -191,6 +289,9 @@ int vmm_host_ram_free(physical_addr_t pa, physical_size_t sz)
 		bank->bmap_free += bcnt;
 
 		vmm_spin_unlock_irqrestore_lite(&bank->bmap_lock, flags);
+
+        VMM_PRINTF_HRDEBUG("%s parametri: pa=0x%llX, sz=0x%llX ****ok\n",
+                           __func__,pa, sz);
 
 		rc = VMM_OK;
 		break;

@@ -1489,6 +1489,24 @@ struct vmm_guest *vmm_manager_guest_create(struct vmm_devtree_node *gnode)
 			vcpu->periodicity = vcpu->deadline;
 		}
 
+#ifdef CONFIG_MEMORY_RESERVATION
+
+
+/* Inizialize Bandwidth Reservation Parameters*/
+if (vmm_devtree_read_u32(vnode,
+    VMM_DEVTREE_BUDGET_ATTR_NAME, &vcpu->mbudget)) {
+    vcpu->mbudget = VMM_VCPU_DEF_BUDGET;
+}
+
+vcpu->mactual_budget = vcpu->mbudget;
+vcpu->mrecharge = FALSE;
+
+if (vmm_devtree_read_u64(vnode,
+    VMM_DEVTREE_PERIOD_ATTR_NAME, &vcpu->mperiod)) {
+    vcpu->mperiod = VMM_VCPU_DEF_PERIOD;
+}
+#endif
+
 		/* Initialize architecture specific context */
 		vcpu->arch_priv = NULL;
 		if (arch_vcpu_init(vcpu)) {

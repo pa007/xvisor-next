@@ -22,6 +22,7 @@
 # */
 
 commands-objs-$(CONFIG_CMD_VERSION)+= cmd_version.o
+commands-objs-$(CONFIG_CMD_VERSION)+= cmd_cp15.o
 commands-objs-$(CONFIG_CMD_SLEEP)+= cmd_sleep.o
 commands-objs-$(CONFIG_CMD_ECHO)+= cmd_echo.o
 commands-objs-$(CONFIG_CMD_RESET)+= cmd_reset.o

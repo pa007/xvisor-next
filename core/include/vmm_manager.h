@@ -31,6 +31,7 @@
 #include <vmm_spinlocks.h>
 #include <vmm_devtree.h>
 #include <vmm_cpumask.h>
+#include <vmm_timer.h>
 #include <libs/list.h>
 #include <libs/rbtree.h>
 
@@ -49,6 +50,7 @@ enum vmm_region_flags {
 	VMM_REGION_ISRESERVED=0x00000800,
 	VMM_REGION_ISALLOCED=0x00001000,
 	VMM_REGION_ISDYNAMIC=0x00002000,
+    VMM_REGION_ISCOLORED=0X00004000,
 };
 
 #define VMM_REGION_MANIFEST_MASK	(VMM_REGION_REAL | \
@@ -83,6 +85,7 @@ struct vmm_region {
 	u32 align_order;
 	u32 map_order;
 	u32 maps_count;
+    u32 colors;
 	struct vmm_region_mapping *maps;
 	void *devemu_priv;
 	void *priv;
@@ -189,6 +192,8 @@ enum vmm_vcpu_states {
 #define VMM_VCPU_DEF_TIME_SLICE		(CONFIG_TSLICE_MS * 1000000)
 #define VMM_VCPU_DEF_DEADLINE		(VMM_VCPU_DEF_TIME_SLICE * 10)
 #define VMM_VCPU_DEF_PERIODICITY	(VMM_VCPU_DEF_DEADLINE * 10)
+#define VMM_VCPU_DEF_BUDGET         (100000000) //default badget memory access
+#define VMM_VCPU_DEF_PERIOD         10000000000//VMM_VCPU_DEF_PERIODICITY //10000 MS?
 
 struct vmm_vcpu_resource {
 	struct dlist head;
@@ -250,6 +255,13 @@ struct vmm_vcpu {
 	struct dlist wq_head;
 	vmm_spinlock_t *wq_lock;
 	void *wq_priv;
+
+    /* Bandwidth Reservation Parameters*/
+    u32 mbudget;
+    u32 mactual_budget;
+    u64 mperiod;
+    bool mrecharge;
+    struct vmm_timer_event mrecharge_evt;
 };
 
 /** Acquire manager lock */

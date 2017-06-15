@@ -33,6 +33,14 @@
 /* Notifier event when guest aspace is reset */
 #define VMM_GUEST_ASPACE_EVENT_RESET		0x03
 
+
+//#define GUEST_ASPACE_DEBUG
+#ifdef GUEST_ASPACE_DEBUG
+#define VMM_PRINTF_GADEBUG(msg...)  vmm_printf(msg)
+#else
+#define VMM_PRINTF_GADEBUG(msg...)
+#endif
+
 /** Representation of block device notifier event */
 struct vmm_guest_aspace_event {
 	struct vmm_guest *guest;

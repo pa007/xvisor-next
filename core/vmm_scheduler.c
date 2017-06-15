@@ -31,6 +31,7 @@
 #include <vmm_schedalgo.h>
 #include <vmm_scheduler.h>
 #include <vmm_stdio.h>
+#include <cpu_pmu.h>
 #include <arch_regs.h>
 #include <arch_cpu_irq.h>
 #include <arch_vcpu.h>
@@ -155,6 +156,10 @@ static struct vmm_vcpu *__vmm_scheduler_next1(struct vmm_scheduler_ctrl *schedp,
 	arch_vcpu_switch(NULL, next, regs);
 	next->state_ready_nsecs += tstamp - next->state_tstamp;
 	arch_atomic_write(&next->state, VMM_VCPU_STATE_RUNNING);
+    #ifdef CONFIG_MEMORY_RESERVATION
+    if (next->is_normal)
+        start_pmu_for_vcpu(next);
+    #endif
 	next->resumed = FALSE;
 	next->state_tstamp = tstamp;
 	schedp->current_vcpu = next;
@@ -162,6 +167,8 @@ static struct vmm_vcpu *__vmm_scheduler_next1(struct vmm_scheduler_ctrl *schedp,
 	vmm_timer_event_start(&schedp->ev, next_time_slice);
 
 	vmm_write_unlock_irqrestore_lite(&next->sched_lock, nf);
+
+
 
 	return next;
 }
@@ -191,6 +198,13 @@ static struct vmm_vcpu *__vmm_scheduler_next2(struct vmm_scheduler_ctrl *schedp,
 			schedp->current_vcpu_irq_ns = schedp->irq_process_ns;
 			arch_atomic_write(&current->state, VMM_VCPU_STATE_READY);
 			current->state_tstamp = tstamp;
+            #ifdef CONFIG_MEMORY_RESERVATION
+            if (current->is_normal)
+            {
+                //vmm_printf("%s: chimata a stop da stato RUNNING -> READY\n",__func__);
+                stop_pmu_for_vcpu(current);
+            }
+            #endif
 			rq_enqueue(schedp, current);
 		}
 		tcurrent = current;
@@ -223,11 +237,16 @@ dequeue_again:
 
 	next->state_ready_nsecs += tstamp - next->state_tstamp;
 	arch_atomic_write(&next->state, VMM_VCPU_STATE_RUNNING);
+    #ifdef CONFIG_MEMORY_RESERVATION
+    if (next->is_normal)
+        start_pmu_for_vcpu(next);
+    #endif
 	next->resumed = FALSE;
 	next->state_tstamp = tstamp;
 	schedp->current_vcpu = next;
 	schedp->current_vcpu_irq_ns = schedp->irq_process_ns;
 	vmm_timer_event_start(&schedp->ev, next_time_slice);
+
 
 	if (next != current) {
 		vmm_write_unlock_irqrestore_lite(&next->sched_lock, nf);
@@ -364,6 +383,29 @@ int vmm_scheduler_force_resched(u32 hcpu)
 	return VMM_OK;
 }
 
+#ifdef CONFIG_MEMORY_RESERVATION
+static void mrecharge_evt_handler(struct vmm_timer_event *ev)
+{
+    u32 flags;
+    struct vmm_vcpu *vcpu = ev->priv;
+    vmm_write_lock_lite(&vcpu->sched_lock);
+    vcpu->mactual_budget = vcpu->mbudget;
+    vcpu->mrecharge = FALSE; //No more in recharging sub-state
+    vmm_write_unlock_lite(&vcpu->sched_lock);
+    /* Lock VCPU WFI */
+    vmm_spin_lock_irqsave_lite(&vcpu->irqs.wfi.lock, flags);
+    /* Set wait for irq state */
+    vcpu->irqs.wfi.state = TRUE;
+    /* Unlock VCPU WFI */
+    vmm_spin_unlock_irqrestore_lite(&vcpu->irqs.wfi.lock, flags);
+
+    vmm_timer_event_restart(&vcpu->mrecharge_evt);
+    vmm_manager_vcpu_resume(vcpu);
+    //vmm_printf("%s: REC vcpu %d in core %d budget=%u\n",__func__,vcpu->id,vmm_smp_processor_id(),vcpu->mbudget);
+
+}
+#endif
+
 int vmm_scheduler_state_change(struct vmm_vcpu *vcpu, u32 new_state)
 {
 	u64 tstamp;
@@ -397,6 +439,9 @@ int vmm_scheduler_state_change(struct vmm_vcpu *vcpu, u32 new_state)
 			/* New VCPU */
 			rc = vmm_schedalgo_vcpu_setup(vcpu);
 		} else if (current_state != VMM_VCPU_STATE_RESET) {
+             #ifdef CONFIG_MEMORY_RESERVATION
+             vmm_timer_event_stop(&vcpu->mrecharge_evt);
+             #endif
 			/* Existing VCPU */
 			/* Clear resumed flag */
 			vcpu->resumed = FALSE;
@@ -426,12 +471,35 @@ int vmm_scheduler_state_change(struct vmm_vcpu *vcpu, u32 new_state)
 	case VMM_VCPU_STATE_READY:
 		if ((current_state == VMM_VCPU_STATE_RESET) ||
 		    (current_state == VMM_VCPU_STATE_PAUSED)) {
+
+            #ifdef CONFIG_MEMORY_RESERVATION
+            if (VMM_VCPU_STATE_RESET == current_state && vcpu->is_normal)
+            {
+                vcpu->mactual_budget = vcpu->mbudget;
+                INIT_TIMER_EVENT(&vcpu->mrecharge_evt, &mrecharge_evt_handler, vcpu);
+                vmm_timer_event_start_hcpu(&vcpu->mrecharge_evt, vcpu->mperiod,vcpu->hcpu);
+            }
+
+            //The vcpu has finished the budget and waits for the charging event
+            if (VMM_VCPU_STATE_PAUSED == current_state && vcpu->mrecharge && vcpu->is_normal)
+            {
+                goto skip_state_change;
+            }
+            #endif
 			/* Enqueue VCPU to ready queue */
 			rc = rq_enqueue(schedp, vcpu);
 			if (!rc && (schedp->current_vcpu != vcpu)) {
 				preempt = rq_prempt_needed(schedp);
 			}
 		} else if (current_state == VMM_VCPU_STATE_RUNNING) {
+            //to be removed?
+            #ifdef CONFIG_MEMORY_RESERVATION
+            if (vcpu->is_normal)
+            {
+                //vmm_printf("%s: chimata a stop da stato RUNNING -> READY\n",__func__);
+                //stop_pmu_for_vcpu(vcpu);
+            }
+            #endif
 			/* Set resumed flag. This means we catch
 			 * resume event while VCPU is RUNNING.
 			 */
@@ -461,6 +529,13 @@ int vmm_scheduler_state_change(struct vmm_vcpu *vcpu, u32 new_state)
 			resumed = vcpu->resumed;
 			vcpu->resumed = FALSE;
 			if (resumed && (new_state == VMM_VCPU_STATE_PAUSED)) {
+                #ifdef CONFIG_MEMORY_RESERVATION
+                if (VMM_VCPU_STATE_RUNNING == current_state && vcpu->is_normal)
+                {
+                    //vmm_printf("%s: chimata a top da stato RUNNING -> PAUSED\n",__func__);
+                    stop_pmu_for_vcpu(vcpu);
+                }
+                #endif
 				goto skip_state_change;
 			} else if (schedp->current_vcpu == vcpu) {
 				/* Preempt current VCPU if paused or halted */

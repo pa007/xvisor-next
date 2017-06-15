@@ -26,10 +26,23 @@
 
 #include <vmm_types.h>
 
+//#define HOST_RAM_DEBUG
+#ifdef HOST_RAM_DEBUG
+#define VMM_PRINTF_HRDEBUG(msg...)  vmm_printf(msg)
+#else
+#define VMM_PRINTF_HRDEBUG(msg...)
+#endif
+
 /** Allocate physical space from RAM */
 physical_size_t vmm_host_ram_alloc(physical_addr_t *pa,
 				   physical_size_t sz,
 				   u32 align_order);
+
+/** Allocate physical space from RAM using colors*/
+physical_size_t vmm_host_ram_alloc_colored(physical_addr_t *pa,
+                   physical_size_t sz,
+                   u32 align_order,
+                   u32 colors);
 
 /** Reserve a portion of RAM forcefully */
 int vmm_host_ram_reserve(physical_addr_t pa, physical_size_t sz);

@@ -51,6 +51,8 @@
 #include <arch_cpu.h>
 #include <arch_board.h>
 
+#include <cpu_pmu.h>
+
 /* Optional includes */
 #include <drv/rtc.h>
 
@@ -474,6 +476,10 @@ static void __init init_bootcpu(void)
 	}
 #endif
 
+    /* Inizialize pmu interrupt on bootcpu*/
+    vmm_printf("init: pmu interrupt on bootcpu\n");
+    arch_pmu_init();
+
 	/* Initialize workqueue framework */
 	vmm_printf("init: workqueue framework\n");
 	ret = vmm_workqueue_init();
@@ -552,6 +558,10 @@ static void __cpuinit init_secondary(void)
 	if (ret) {
 		vmm_hang();
 	}
+
+    /* Inizialize pmu interrupt secondary cpu*/
+    vmm_printf("init: pmu interrupt on secondary cpu\n");
+    arch_pmu_init();
 
 	/* Initialize workqueue framework */
 	ret = vmm_workqueue_init();
